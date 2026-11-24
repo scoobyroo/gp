@@ -40,7 +40,7 @@ final class Node {
     }
 
     void kv(String label, String value) {
-        if (value != null && !value.isBlank()) {
+        if (value != null && !Text.isBlank(value)) {
             detail.add(String.format("%-22s: %s", label, value));
         }
     }
