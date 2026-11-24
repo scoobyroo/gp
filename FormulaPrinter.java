@@ -85,7 +85,7 @@ final class FormulaPrinter {
     }
 
     private void add(int indent, String text) {
-        lines.add("  ".repeat(indent) + text);
+        lines.add(Text.repeat("  ", indent) + text);
     }
 
     private String cond(String a, String op, String b) {
