@@ -34,11 +34,12 @@ final class Row {
         if (o == null) {
             return "";
         }
-        if (o instanceof Timestamp t) {
-            String s = t.toLocalDateTime().toString().replace('T', ' ');
+        if (o instanceof Timestamp) {
+            String s = ((Timestamp) o).toLocalDateTime().toString().replace('T', ' ');
             return s.endsWith(" 00:00") ? s.substring(0, 10) : s;
         }
-        if (o instanceof BigDecimal b) {
+        if (o instanceof BigDecimal) {
+            BigDecimal b = (BigDecimal) o;
             return b.signum() == 0 ? "0" : b.stripTrailingZeros().toPlainString();
         }
         return o.toString().trim();
@@ -46,11 +47,11 @@ final class Row {
 
     BigDecimal num(String column) {
         Object o = values.get(column);
-        if (o instanceof BigDecimal b) {
-            return b;
+        if (o instanceof BigDecimal) {
+            return (BigDecimal) o;
         }
-        if (o instanceof Number n) {
-            return new BigDecimal(n.toString());
+        if (o instanceof Number) {
+            return new BigDecimal(o.toString());
         }
         if (o != null) {
             try {
