@@ -16,7 +16,7 @@ final class Codes {
 
     /** Long name for a translate value, or the raw value when none is defined. */
     String label(String field, String value) {
-        if (value == null || value.isBlank()) {
+        if (value == null || Text.isBlank(value)) {
             return "";
         }
         String key = field + "|" + value;
