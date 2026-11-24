@@ -51,26 +51,26 @@ final class Report {
     // ------------------------------------------------------------------ layout helpers
 
     private void banner(String text) {
-        out.println("=".repeat(RULE_WIDTH));
+        out.println(Text.repeat("=", RULE_WIDTH));
         out.println(" " + text);
-        out.println("=".repeat(RULE_WIDTH));
+        out.println(Text.repeat("=", RULE_WIDTH));
     }
 
     private void section(String text) {
         out.println();
-        out.println("=".repeat(RULE_WIDTH));
+        out.println(Text.repeat("=", RULE_WIDTH));
         out.println(text);
-        out.println("=".repeat(RULE_WIDTH));
+        out.println(Text.repeat("=", RULE_WIDTH));
     }
 
     private void sub(String text) {
         out.println();
         out.println(text);
-        out.println("-".repeat(Math.min(RULE_WIDTH, text.length())));
+        out.println(Text.repeat("-", Math.min(RULE_WIDTH, text.length())));
     }
 
     private void kv(String label, String value) {
-        if (value != null && !value.isBlank()) {
+        if (value != null && !Text.isBlank(value)) {
             out.println(String.format("  %-22s: %s", label, value));
         }
     }
@@ -105,7 +105,7 @@ final class Report {
         if (opt.emplid != null) {
             out.println(" Payee/run   : " + opt.emplid + (opt.rcd != null ? " rcd " + opt.rcd : "") + " / " + opt.calRun);
         }
-        out.println("=".repeat(RULE_WIDTH));
+        out.println(Text.repeat("=", RULE_WIDTH));
         Row r = root.row;
         String scope = codes.label("USED_BY", r.str("USED_BY")) + (r.str("COUNTRY").isEmpty() ? "" : " (" + r.str("COUNTRY") + ")");
         kv("Country scope", scope);
@@ -249,13 +249,13 @@ final class Report {
         int shown = 0;
         for (Node.Dep d : parent.deps) {
             if (shown++ >= MAX_CHILDREN) {
-                out.println("     ".repeat(level - 1) + "  ... " + (parent.deps.size() - MAX_CHILDREN)
+                out.println(Text.repeat("     ", level - 1) + "  ... " + (parent.deps.size() - MAX_CHILDREN)
                         + " more inputs not shown");
                 break;
             }
             Node child = g.get(d.pin);
             if (child == null) {
-                out.println("     ".repeat(level - 1) + "  - " + d.role + ": " + pins.name(d.pin) + " ["
+                out.println(Text.repeat("     ", level - 1) + "  - " + d.role + ": " + pins.name(d.pin) + " ["
                         + pins.typeName(pins.typeOf(d.pin)) + "]  (not loaded)");
                 continue;
             }
@@ -265,7 +265,7 @@ final class Report {
 
     private void printNode(Graph g, Node n, String role, int level, Set<Integer> printed, ValueProbe probe) {
         Pin p = n.pin;
-        String ind = "     ".repeat(level - 1) + "  ";
+        String ind = Text.repeat("     ", level - 1) + "  ";
         StringBuilder h = new StringBuilder(ind + "- ");
         if (!role.isEmpty()) {
             h.append(role).append(": ");
