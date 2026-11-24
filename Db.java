@@ -27,7 +27,7 @@ final class Db implements AutoCloseable {
         }
         conn = DriverManager.getConnection(
                 p.getProperty("url").trim(), p.getProperty("user").trim(), p.getProperty("password").trim());
-        if (schema != null && !schema.isBlank()) {
+        if (schema != null && !Text.isBlank(schema)) {
             if (!schema.matches("[A-Za-z][A-Za-z0-9_$#]*")) {
                 throw new IllegalArgumentException("Invalid schema name: " + schema);
             }
@@ -54,8 +54,9 @@ final class Db implements AutoCloseable {
                     Row r = new Row();
                     for (int c = 1; c <= n; c++) {
                         Object v = rs.getObject(c);
-                        if (v instanceof java.sql.Clob clob) {
+                        if (v instanceof java.sql.Clob) {
                             // CLOBs (e.g. element comments) must be read while the result set is open.
+                            java.sql.Clob clob = (java.sql.Clob) v;
                             v = clob.getSubString(1, (int) Math.min(clob.length(), 200_000L));
                         }
                         r.put(md.getColumnLabel(c), v);
