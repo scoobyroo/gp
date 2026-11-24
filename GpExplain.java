@@ -1,7 +1,6 @@
 import java.io.FileOutputStream;
 import java.io.OutputStream;
 import java.io.PrintStream;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /**
@@ -27,12 +26,12 @@ public class GpExplain {
             return;
         }
 
-        PrintStream console = new PrintStream(new FileOutputStream(java.io.FileDescriptor.out), true, StandardCharsets.UTF_8);
+        PrintStream console = new PrintStream(new FileOutputStream(java.io.FileDescriptor.out), true, "UTF-8");
         PrintStream out = console;
         PrintStream file = null;
         if (opt.outFile != null) {
-            file = new PrintStream(new FileOutputStream(opt.outFile), true, StandardCharsets.UTF_8);
-            out = new PrintStream(new Tee(console, file), true, StandardCharsets.UTF_8);
+            file = new PrintStream(new FileOutputStream(opt.outFile), true, "UTF-8");
+            out = new PrintStream(new Tee(console, file), true, "UTF-8");
         }
 
         try (Db db = new Db(opt.config, opt.schema, opt.debug)) {
