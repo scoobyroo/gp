@@ -1,5 +1,6 @@
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
@@ -7,39 +8,51 @@ import java.util.TreeSet;
 /**
  * Reverse index answering "which elements assign a value to this variable?".
  * A variable can be filled by a formula (target field), a bracket (return column) or an
- * array (loaded field). The index is built lazily with a handful of queries and cached.
+ * array (loaded field). The index is built lazily from the XML exports and cached.
  */
 final class Setters {
-    private final Db db;
+    private final XmlDb db;
     private Map<Integer, Set<Integer>> index;
 
-    Setters(Db db) {
+    Setters(XmlDb db) {
         this.db = db;
     }
 
+    /** PIN_NUMs of the elements that set the given variable, in ascending order (empty when none). */
     Set<Integer> forVariable(int var) {
         if (index == null) {
             build();
         }
-        return index.getOrDefault(var, Collections.emptySet());
+        Set<Integer> found = index.get(var);
+        return found != null ? found : Collections.<Integer>emptySet();
     }
 
     private void build() {
         index = new HashMap<>();
-        load("SELECT DISTINCT PIN_FRML_FLD3_NUM AS V, PIN_NUM AS S FROM PS_GP_FORMULA_DTL WHERE PIN_FRML_FLD3_NUM <> 0");
+        load("PS_GP_FORMULA_DTL", "PIN_FRML_FLD3_NUM");
         for (int n = 1; n <= 8; n++) {
-            load("SELECT DISTINCT PIN_VAL" + n + "_NUM AS V, PIN_NUM AS S FROM PS_GP_BRACKET WHERE PIN_VAL" + n
-                    + "_NUM <> 0");
+            load("PS_GP_BRACKET", "PIN_VAL" + n + "_NUM");
         }
-        load("SELECT DISTINCT PIN_VAR_NUM AS V, PIN_NUM AS S FROM PS_GP_ARRAY_FLD WHERE PIN_VAR_NUM <> 0");
+        load("PS_GP_ARRAY_FLD", "PIN_VAR_NUM");
     }
 
-    private void load(String sql) {
-        for (Row r : db.tryQuery(sql)) {
-            int v = r.integer("V");
-            int s = r.integer("S");
+    /** Equivalent of: SELECT DISTINCT col AS V, PIN_NUM AS S FROM table WHERE col <> 0. */
+    private void load(String table, String column) {
+        List<Row> rows = db.rows(table);
+        for (Row r : rows) {
+            // SQL "col <> 0" drops both NULL and zero values
+            if (r.num(column).signum() == 0) {
+                continue;
+            }
+            int v = r.integer(column);
+            int s = r.integer("PIN_NUM");
             if (v != s) {
-                index.computeIfAbsent(v, k -> new TreeSet<>()).add(s);
+                Set<Integer> setters = index.get(v);
+                if (setters == null) {
+                    setters = new TreeSet<>();
+                    index.put(v, setters);
+                }
+                setters.add(s);
             }
         }
     }

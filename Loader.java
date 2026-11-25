@@ -8,7 +8,7 @@ import java.util.Set;
 import java.util.StringJoiner;
 
 /**
- * Reads the GP definition tables for one element and turns them into a Node: readable definition
+ * Reads the GP definition tables (XML exports) for one element and turns them into a Node: readable definition
  * lines, the elements it depends on and the elements it assigns. Which tables are consulted is
  * decided purely by the element type (PIN_TYPE) - nothing is specific to a particular element,
  * country or customer configuration. Optional tables that are missing in an installation are skipped.
@@ -59,13 +59,13 @@ final class Loader {
         ROLE.put("PIN_RND_NUM", "rounding rule");
     }
 
-    private final Db db;
+    private final XmlDb db;
     private final Pins pins;
     private final Codes codes;
     private final Setters setters;
     private final String asof;
 
-    Loader(Db db, Pins pins, Codes codes, Setters setters, String asof) {
+    Loader(XmlDb db, Pins pins, Codes codes, Setters setters, String asof) {
         this.db = db;
         this.pins = pins;
         this.codes = codes;
@@ -122,11 +122,33 @@ final class Loader {
 
     // ------------------------------------------------------------------ helpers
 
+    /**
+     * Rows of an effective-dated table for one element: WHERE pinCol = pin AND EFFDT = (latest EFFDT on or before
+     * the as-of date), optionally ORDER BY a numeric column. A missing export yields no rows.
+     */
     List<Row> effRows(String table, String pinCol, int pin, String orderBy) {
-        String sql = "SELECT d.* FROM " + table + " d WHERE d." + pinCol + " = ? AND d.EFFDT = "
-                + "(SELECT MAX(x.EFFDT) FROM " + table + " x WHERE x." + pinCol + " = d." + pinCol
-                + " AND x.EFFDT <= TO_DATE(?, 'YYYY-MM-DD'))" + (orderBy == null ? "" : " ORDER BY d." + orderBy);
-        return db.tryQuery(sql, pin, asof);
+        List<Row> rows = Table.effectiveLatest(db.rows(table), pinCol, pin, asof);
+        return orderBy == null ? rows : Table.sortBy(rows, byNumber(orderBy));
+    }
+
+    /** ORDER BY a numeric column ascending (stable; a missing value sorts last like an Oracle NULL). */
+    private static Comparator<Row> byNumber(final String col) {
+        return new Comparator<Row>() {
+            @Override
+            public int compare(Row a, Row b) {
+                boolean na = a.isNull(col);
+                boolean nb = b.isNull(col);
+                if (na || nb) {
+                    return na == nb ? 0 : (na ? 1 : -1);
+                }
+                return a.num(col).compareTo(b.num(col));
+            }
+        };
+    }
+
+    /** WHERE PIN_NUM = pin on a table that is not effective-dated. A missing export yields no rows. */
+    private List<Row> pinRows(String table, int pin) {
+        return Table.eq(db.rows(table), "PIN_NUM", pin);
     }
 
     static String roleName(String col) {
@@ -297,7 +319,7 @@ final class Loader {
         }
         genericRoles(n, e);
         // Auto-assigned components (optional table)
-        for (Row c : db.tryQuery("SELECT * FROM PS_GP_PIN_CMPNT WHERE PIN_NUM = ?", p.num)) {
+        for (Row c : pinRows("PS_GP_PIN_CMPNT", p.num)) {
             genericRoles(n, c);
         }
     }
@@ -326,7 +348,7 @@ final class Loader {
     // ------------------------------------------------------------------ accumulators
 
     private void accumulator(Node n) {
-        List<Row> rs = db.tryQuery("SELECT * FROM PS_GP_ACCUMULATOR WHERE PIN_NUM = ?", n.pin.num);
+        List<Row> rs = pinRows("PS_GP_ACCUMULATOR", n.pin.num);
         if (!rs.isEmpty()) {
             Row a = rs.get(0);
             String per = codes.both("ACM_PRD_OPTN", a.str("ACM_PRD_OPTN"));
@@ -361,9 +383,7 @@ final class Loader {
             }
             genericRoles(n, a);
         }
-        List<Row> mem = db.tryQuery("SELECT m.* FROM PS_GP_ACM_MBR m WHERE m.PIN_NUM = ? "
-                + "AND NVL(m.BGN_DT, DATE '1900-01-01') <= TO_DATE(?, 'YYYY-MM-DD') "
-                + "AND (m.END_DT IS NULL OR m.END_DT >= TO_DATE(?, 'YYYY-MM-DD'))", n.pin.num, asof, asof);
+        List<Row> mem = Table.activeOn(pinRows("PS_GP_ACM_MBR", n.pin.num), "BGN_DT", "END_DT", asof);
         mem.sort(Comparator.comparing((Row m) -> pins.name(m.integer("PIN_MBR_NUM")).toUpperCase()));
         n.line("Members (" + mem.size() + "):");
         int shown = 0;
@@ -457,15 +477,17 @@ final class Loader {
         if (b.integer("PIN_RND_NUM") != 0) {
             n.reads("rounding rule", b.integer("PIN_RND_NUM"));
         }
-        Object eff = b.raw("EFFDT");
-        int count = 0;
-        List<Row> c = db.tryQuery("SELECT COUNT(*) C FROM PS_GP_BRACKET_DTL WHERE PIN_NUM = ? AND EFFDT = ?", n.pin.num, eff);
-        if (!c.isEmpty()) {
-            count = c.get(0).integer("C");
+        // Detail rows of exactly this bracket version: same PIN_NUM and the same EFFDT as the header row.
+        String eff = Table.date(b, "EFFDT");
+        List<Row> detail = new ArrayList<>();
+        for (Row d : pinRows("PS_GP_BRACKET_DTL", n.pin.num)) {
+            if (Table.date(d, "EFFDT").equals(eff)) {
+                detail.add(d);
+            }
         }
+        int count = detail.size();
         n.kv("Table rows", String.valueOf(count));
-        List<Row> sample = db.tryQuery("SELECT * FROM (SELECT d.* FROM PS_GP_BRACKET_DTL d WHERE d.PIN_NUM = ? "
-                + "AND d.EFFDT = ? ORDER BY d.SEQ_NUM5) WHERE ROWNUM <= 4", n.pin.num, eff);
+        List<Row> sample = Table.first(Table.sortBy(detail, byNumber("SEQ_NUM5")), 4);
         for (Row s : sample) {
             StringJoiner ks = new StringJoiner(", ");
             for (int i = 1; i <= kc; i++) {
@@ -485,7 +507,7 @@ final class Loader {
     // ------------------------------------------------------------------ arrays (database records)
 
     private void array(Node n) {
-        List<Row> ar = db.tryQuery("SELECT * FROM PS_GP_ARRAY WHERE PIN_NUM = ?", n.pin.num);
+        List<Row> ar = pinRows("PS_GP_ARRAY", n.pin.num);
         if (ar.isEmpty()) {
             n.line("No PS_GP_ARRAY definition found");
             return;
@@ -496,7 +518,7 @@ final class Loader {
         n.kv("Row selection", codes.label("ARRAY_KEY_OPTN", a.str("ARRAY_KEY_OPTN")));
         n.kv("Processing", codes.label("ARRAY_PRC_OPTN", a.str("ARRAY_PRC_OPTN")));
         genericRoles(n, a);
-        for (Row k : db.tryQuery("SELECT * FROM PS_GP_ARRAY_KEY WHERE PIN_NUM = ? ORDER BY SEQ_NUM5", n.pin.num)) {
+        for (Row k : Table.sortBy(pinRows("PS_GP_ARRAY_KEY", n.pin.num), byNumber("SEQ_NUM5"))) {
             Ref v = Ref.of(k, "ENTRY_TYPE_ID", "PIN_ELEM_NUM", null, null, null);
             String field = k.str("FIELDNAME").isEmpty() ? codes.label("ARRAY_KEY_TYPE", k.str("ARRAY_KEY_TYPE"))
                     : k.str("FIELDNAME");
@@ -508,7 +530,7 @@ final class Loader {
             }
         }
         n.inputGroup = G_ARRAY;
-        for (Row f : db.tryQuery("SELECT * FROM PS_GP_ARRAY_FLD WHERE PIN_NUM = ? ORDER BY SEQ_NUM5", n.pin.num)) {
+        for (Row f : Table.sortBy(pinRows("PS_GP_ARRAY_FLD", n.pin.num), byNumber("SEQ_NUM5"))) {
             int var = f.integer("PIN_VAR_NUM");
             String line = rec + "." + f.str("FIELDNAME") + " -> " + pins.name(var);
             n.line("  loads: " + line + " (" + codes.label("ARRAY_FLD_USE", f.str("ARRAY_FLD_USE")) + ")");

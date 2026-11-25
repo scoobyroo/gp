@@ -2,6 +2,7 @@ import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -10,20 +11,20 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
-/** Prints the explanation: inputs, calculation, outputs (and optionally one payee's actual values). */
+/** Prints the explanation: header, inputs, calculation and outputs of one element, read from the XML exports. */
 final class Report {
     private static final int RULE_WIDTH = 100;
     private static final int MAX_CHILDREN = 25;
     private static final int MAX_LIST = 25;
 
     private final PrintStream out;
-    private final Db db;
+    private final XmlDb db;
     private final Pins pins;
     private final Codes codes;
     private final Loader loader;
     private final Options opt;
 
-    Report(PrintStream out, Db db, Pins pins, Codes codes, Loader loader, Options opt) {
+    Report(PrintStream out, XmlDb db, Pins pins, Codes codes, Loader loader, Options opt) {
         this.out = out;
         this.db = db;
         this.pins = pins;
@@ -34,18 +35,10 @@ final class Report {
 
     void run(Pin root) {
         Graph g = new Graph(loader, pins, root, opt.inputDepth, opt.maxNodes);
-        ValueProbe probe = null;
-        if (opt.emplid != null) {
-            probe = new ValueProbe(db, opt.emplid, opt.calRun, opt.rcd);
-            probe.load(g.nodes.keySet(), root.num);
-        }
         header(root);
         inputs(g, root);
-        calculation(g, probe);
-        outputs(g, probe);
-        if (probe != null) {
-            actual(root, probe);
-        }
+        calculation(g);
+        outputs(g);
     }
 
     // ------------------------------------------------------------------ layout helpers
@@ -102,9 +95,6 @@ final class Report {
         out.println(" Type        : " + pins.typeName(root.type) + " (" + root.type + ")");
         out.println(" Element code: " + root.code + "   (PIN_NUM " + root.num + ")");
         out.println(" As-of date  : " + opt.asof + "   (effective-dated rules are read as of this date)");
-        if (opt.emplid != null) {
-            out.println(" Payee/run   : " + opt.emplid + (opt.rcd != null ? " rcd " + opt.rcd : "") + " / " + opt.calRun);
-        }
         out.println(Text.repeat("=", RULE_WIDTH));
         Row r = root.row;
         String scope = codes.label("USED_BY", r.str("USED_BY")) + (r.str("COUNTRY").isEmpty() ? "" : " (" + r.str("COUNTRY") + ")");
@@ -138,11 +128,16 @@ final class Report {
         Map<String, Set<String>> groups = new LinkedHashMap<>();
         for (String k : new String[] {Loader.G_ARRAY, Loader.G_SYSTEM, Loader.G_BRACKET, Loader.G_PARAM,
             Loader.OTHER_GROUP}) {
-            groups.put(k, new TreeSet<>());
+            groups.put(k, new TreeSet<String>());
         }
         for (Node n : g.nodes.values()) {
             if (n.inputGroup != null) {
-                groups.computeIfAbsent(n.inputGroup, k -> new TreeSet<>()).addAll(n.inputLines);
+                Set<String> set = groups.get(n.inputGroup);
+                if (set == null) {
+                    set = new TreeSet<>();
+                    groups.put(n.inputGroup, set);
+                }
+                set.addAll(n.inputLines);
                 // An array loads many fields; list only those that fill a variable this calculation really uses.
                 for (Map.Entry<Integer, String> vl : n.varLines) {
                     Node var = g.get(vl.getKey());
@@ -179,12 +174,6 @@ final class Report {
         Row r = root.row;
         if (r.yes("OVRD_IND_PI")) {
             out.println("   * Positive input is allowed for this element (values can be entered or generated per payee).");
-            for (String t : new String[] {"PS_GP_PI_MNL_DATA", "PS_GP_PI_GEN_DATA"}) {
-                List<Row> c = db.tryQuery("SELECT COUNT(*) C FROM " + t + " WHERE PIN_NUM = ?", root.num);
-                if (!c.isEmpty() && c.get(0).integer("C") > 0) {
-                    out.println("     - " + c.get(0).integer("C") + " existing rows in " + t + " (all payees and calendars)");
-                }
-            }
         } else {
             out.println("   * Positive input is not enabled for this element.");
         }
@@ -205,12 +194,12 @@ final class Report {
 
     // ------------------------------------------------------------------ 2. calculation
 
-    private void calculation(Graph g, ValueProbe probe) {
+    private void calculation(Graph g) {
         Node root = g.root;
         section("2. HOW IT IS CALCULATED");
 
         sub("2.1 Where it runs in the payroll process");
-        List<String> chains = new ArrayList<>(new LinkedHashSet<>(parentChains(root.pin.num, new HashSet<>(), 0)));
+        List<String> chains = new ArrayList<>(new LinkedHashSet<>(parentChains(root.pin.num, new HashSet<Integer>(), 0)));
         if (chains.isEmpty()) {
             out.println("  Not listed as a step in any section or process effective on " + opt.asof
                     + " (it may be referenced only through formulas, accumulators or element groups).");
@@ -235,17 +224,17 @@ final class Report {
         }
 
         sub("2.3 Calculation chain - each input, what it is and how it is derived");
-        out.println("  (depth " + opt.depth + "; '=>' shows the payee's stored value when --emplid/--calrun are given)");
+        out.println("  (depth " + opt.depth + ")");
         out.println();
         Set<Integer> printed = new HashSet<>();
         printed.add(root.pin.num);
         if (root.deps.isEmpty()) {
             out.println("  (no dependencies)");
         }
-        printChildren(g, root, 1, printed, probe);
+        printChildren(g, root, 1, printed);
     }
 
-    private void printChildren(Graph g, Node parent, int level, Set<Integer> printed, ValueProbe probe) {
+    private void printChildren(Graph g, Node parent, int level, Set<Integer> printed) {
         int shown = 0;
         for (Node.Dep d : parent.deps) {
             if (shown++ >= MAX_CHILDREN) {
@@ -259,11 +248,11 @@ final class Report {
                         + pins.typeName(pins.typeOf(d.pin)) + "]  (not loaded)");
                 continue;
             }
-            printNode(g, child, d.role, level, printed, probe);
+            printNode(g, child, d.role, level, printed);
         }
     }
 
-    private void printNode(Graph g, Node n, String role, int level, Set<Integer> printed, ValueProbe probe) {
+    private void printNode(Graph g, Node n, String role, int level, Set<Integer> printed) {
         Pin p = n.pin;
         String ind = Text.repeat("     ", level - 1) + "  ";
         StringBuilder h = new StringBuilder(ind + "- ");
@@ -273,10 +262,6 @@ final class Report {
         h.append(p.name).append(" [").append(pins.typeName(p.type)).append("]");
         if (!p.descr.isEmpty() && !p.descr.equalsIgnoreCase(p.name)) {
             h.append(" - ").append(p.descr);
-        }
-        String val = probe == null ? "" : probe.annotation(p.num);
-        if (!val.isEmpty()) {
-            h.append("   => ").append(val);
         }
         if (printed.contains(p.num)) {
             h.append("   (described above)");
@@ -298,18 +283,25 @@ final class Report {
             return;
         }
         if (level < opt.depth) {
-            printChildren(g, n, level + 1, printed, probe);
+            printChildren(g, n, level + 1, printed);
         } else {
             out.println(di + "(" + n.deps.size() + " further input" + (n.deps.size() == 1 ? "" : "s")
                     + " not expanded - raise --depth)");
         }
     }
 
+    /**
+     * Parent rows (section steps / process steps) as of the as-of date: for every parent PIN_NUM only the rows of its
+     * latest EFFDT on or before the as-of date are considered, then those whose column equals the element are kept.
+     */
+    private List<Row> effectiveParents(String table, String elemCol, int pin) {
+        List<Row> latest = Table.effectiveLatest(db.rows(table), "PIN_NUM", opt.asof);
+        return Table.eq(latest, elemCol, pin);
+    }
+
     /** Which elements run immediately before/after the element in its section(s). */
     private void neighbours(int pin) {
-        List<Row> parents = db.tryQuery("SELECT d.PIN_NUM, d.SEQ_NUM5 FROM PS_GP_SECTION_DTL d WHERE d.PIN_ELEM_NUM = ? "
-                + "AND d.EFFDT = (SELECT MAX(x.EFFDT) FROM PS_GP_SECTION_DTL x WHERE x.PIN_NUM = d.PIN_NUM "
-                + "AND x.EFFDT <= TO_DATE(?, 'YYYY-MM-DD'))", pin, opt.asof);
+        List<Row> parents = effectiveParents("PS_GP_SECTION_DTL", "PIN_ELEM_NUM", pin);
         for (Row p : parents) {
             List<Row> steps = loader.effRows("PS_GP_SECTION_DTL", "PIN_NUM", p.integer("PIN_NUM"), "SEQ_NUM5");
             int idx = -1;
@@ -336,12 +328,8 @@ final class Report {
         if (depth > 8) {
             return res;
         }
-        List<Row> parents = new ArrayList<>(db.tryQuery("SELECT d.PIN_NUM, d.SEQ_NUM5 FROM PS_GP_SECTION_DTL d "
-                + "WHERE d.PIN_ELEM_NUM = ? AND d.EFFDT = (SELECT MAX(x.EFFDT) FROM PS_GP_SECTION_DTL x "
-                + "WHERE x.PIN_NUM = d.PIN_NUM AND x.EFFDT <= TO_DATE(?, 'YYYY-MM-DD'))", pin, opt.asof));
-        parents.addAll(db.tryQuery("SELECT d.PIN_NUM, d.SEQ_NUM5 FROM PS_GP_PROCESS_DTL d WHERE d.PIN_SECT_NUM = ? "
-                + "AND d.EFFDT = (SELECT MAX(x.EFFDT) FROM PS_GP_PROCESS_DTL x WHERE x.PIN_NUM = d.PIN_NUM "
-                + "AND x.EFFDT <= TO_DATE(?, 'YYYY-MM-DD'))", pin, opt.asof));
+        List<Row> parents = new ArrayList<>(effectiveParents("PS_GP_SECTION_DTL", "PIN_ELEM_NUM", pin));
+        parents.addAll(effectiveParents("PS_GP_PROCESS_DTL", "PIN_SECT_NUM", pin));
         for (Row r : parents) {
             int parent = r.integer("PIN_NUM");
             if (path.contains(parent)) {
@@ -367,60 +355,31 @@ final class Report {
 
     // ------------------------------------------------------------------ 3. outputs
 
-    private void outputs(Graph g, ValueProbe probe) {
+    /** The one sentence for section 3.1, built from STORE_RSLT and STORE_RSLT_IF_ZERO of the element row. */
+    static String storedResultStatement(Row r) {
+        if (!r.yes("STORE_RSLT")) {
+            return "The result is not stored.";
+        }
+        return r.yes("STORE_RSLT_IF_ZERO")
+                ? "The result is stored, and zero results are stored too."
+                : "The result is stored; zero results are not stored.";
+    }
+
+    private void outputs(Graph g) {
         Node root = g.root;
         Pin p = root.pin;
         section("3. OUTPUTS - what it produces and who uses it");
 
         sub("3.1 Stored result");
-        Row r = p.row;
-        String storeFlag = r.yes("STORE_RSLT") ? "Yes" + (r.yes("STORE_RSLT_IF_ZERO") ? " (zero results too)" : " (zero results are not stored)")
-                : "No - this element's result is not written to the result tables";
-        kv("Result stored", storeFlag);
-        String table = p.isEarningOrDeduction() ? "PS_GP_RSLT_ERN_DED" : p.type.equals("AC") ? "PS_GP_RSLT_ACUM" : "PS_GP_RSLT_PIN";
-        List<String> cols = db.columns(table);
-        if (cols.isEmpty()) {
-            kv("Result table", table + " (not found in this installation)");
-        } else {
-            kv("Result table", table + "  - one row per payee, calendar run, segment and slice");
-        }
-        if (p.isEarningOrDeduction()) {
-            String uses = root.facts.getOrDefault("uses", "");
-            describeColumn(cols, "CALC_RSLT_VAL", "the calculated amount for the slice (after proration and rounding)");
-            describeColumn(cols, "CALC_ADJ_VAL", "adjustments applied on top of the calculated amount");
-            if (uses.contains("BASE")) {
-                describeColumn(cols, "BASE_RSLT_VAL", "base amount used");
-            }
-            if (uses.contains("RATE")) {
-                describeColumn(cols, "RATE_RSLT_VAL", "rate used");
-            }
-            if (uses.contains("UNIT")) {
-                describeColumn(cols, "UNIT_RSLT_VAL", "units used");
-            }
-            if (uses.contains("PCT")) {
-                describeColumn(cols, "PCT_RSLT_VAL", "percent used");
-            }
-            if (p.type.equals("DD")) {
-                describeColumn(cols, "RSLT_NOT_TKN", "part of the deduction that could not be taken");
-                describeColumn(cols, "RSLT_ADD_ARR", "amount added to arrears");
-                describeColumn(cols, "RSLT_PAYBK", "amount recovered from arrears");
-                describeColumn(cols, "RSLT_XFER_VAL", "amount transferred to later processing");
-            } else if ("Y".equals(root.facts.get("arrears"))) {
-                describeColumn(cols, "RSLT_ADD_ARR", "amount added to arrears");
-                describeColumn(cols, "RSLT_PAYBK", "amount recovered from arrears");
-            }
-        } else if (p.type.equals("AC")) {
-            describeColumn(cols, "CALC_RSLT_VAL", "accumulated total for the period (including adjustments)");
-            describeColumn(cols, "CALC_VAL", "calculated total before user adjustments");
-            describeColumn(cols, "USER_ADJ_VAL", "user adjustment to the accumulator");
-        } else {
-            describeColumn(cols, "CALC_RSLT_VAL", "numeric result");
-            describeColumn(cols, "CHR_PIN_VAL", "character result");
-            describeColumn(cols, "DATE_PIN_VAL", "date result");
-        }
+        out.println("  " + storedResultStatement(p.row));
+
         if (!root.produces.isEmpty()) {
             Set<Integer> prod = new LinkedHashSet<>(root.produces);
-            if (prod.remove(p.num)) {
+            boolean own = prod.remove(p.num);
+            if (own || !prod.isEmpty()) {
+                sub("Values it hands on");
+            }
+            if (own) {
                 out.println("  Returns its own value to whatever references it.");
             }
             if (!prod.isEmpty()) {
@@ -433,13 +392,16 @@ final class Report {
         }
 
         sub("3.2 Accumulators it feeds");
-        List<Row> feeds = db.tryQuery("SELECT m.PIN_NUM, m.ACM_SIGN, m.PCT_TO_ACM FROM PS_GP_ACM_MBR m WHERE m.PIN_MBR_NUM = ? "
-                + "AND NVL(m.BGN_DT, DATE '1900-01-01') <= TO_DATE(?, 'YYYY-MM-DD') "
-                + "AND (m.END_DT IS NULL OR m.END_DT >= TO_DATE(?, 'YYYY-MM-DD'))", p.num, opt.asof, opt.asof);
+        List<Row> feeds = Table.activeOn(Table.eq(db.rows("PS_GP_ACM_MBR"), "PIN_MBR_NUM", p.num), "BGN_DT", "END_DT", opt.asof);
         if (feeds.isEmpty()) {
             out.println("  None - the element is not a member of any accumulator on " + opt.asof + ".");
         }
-        feeds.sort(java.util.Comparator.comparing((Row m) -> pins.name(m.integer("PIN_NUM")).toUpperCase()));
+        feeds = Table.sortBy(feeds, new Comparator<Row>() {
+            @Override
+            public int compare(Row a, Row b) {
+                return pins.name(a.integer("PIN_NUM")).toUpperCase().compareTo(pins.name(b.integer("PIN_NUM")).toUpperCase());
+            }
+        });
         for (Row f : feeds) {
             int acc = f.integer("PIN_NUM");
             String sign = "S".equals(f.str("ACM_SIGN")) ? "subtracted from" : "added to";
@@ -461,13 +423,7 @@ final class Report {
         }
     }
 
-    private void describeColumn(List<String> cols, String col, String text) {
-        if (cols.isEmpty() || cols.contains(col)) {
-            out.println(String.format("    %-16s %s", col, text));
-        }
-    }
-
-    /** Elements that reference the given element, grouped by kind. Columns are discovered from the schema. */
+    /** Elements that reference the given element, grouped by kind. Columns are discovered from the data. */
     private Map<String, List<String>> usedBy(int pin) {
         Map<String, List<String>> res = new LinkedHashMap<>();
         collect(res, "Earnings / deductions", "PS_GP_ERN_DED", refColumns("PS_GP_ERN_DED", "PIN_", null), pin);
@@ -493,14 +449,8 @@ final class Report {
         if (columns.isEmpty()) {
             return;
         }
-        StringBuilder where = new StringBuilder();
-        List<Object> params = new ArrayList<>();
-        for (String c : columns) {
-            where.append(where.length() == 0 ? "" : " OR ").append(c).append(" = ?");
-            params.add(pin);
-        }
         Set<String> names = new TreeSet<>();
-        for (Row r : db.tryQuery("SELECT DISTINCT PIN_NUM FROM " + table + " WHERE " + where, params.toArray())) {
+        for (Row r : Table.any(db.rows(table), pin, columns.toArray(new String[0]))) {
             int num = r.integer("PIN_NUM");
             if (num != pin) {
                 names.add(pins.name(num));
@@ -516,23 +466,5 @@ final class Report {
             list.add("... +" + more + " more");
         }
         res.put(label + " (" + names.size() + ")", list);
-    }
-
-    // ------------------------------------------------------------------ 4. actual values
-
-    private void actual(Pin root, ValueProbe probe) {
-        section("4. ACTUAL RESULT for payee " + opt.emplid + " in calendar run " + opt.calRun);
-        List<String> v = probe.values.get(root.num);
-        if (v == null || v.isEmpty()) {
-            out.println("  No stored result for " + root.name + " (payee not calculated for it in that run, "
-                    + "zero results not stored, or the element does not store results).");
-        } else {
-            for (String s : v) {
-                out.println("  " + s);
-            }
-        }
-        out.println();
-        out.println("  Values of the intermediate elements appear next to each item in section 2.3 after '=>'.");
-        out.println("  Elements that do not store results (STORE_RSLT = N) have no value to show.");
     }
 }

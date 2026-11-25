@@ -1,5 +1,4 @@
 import java.math.BigDecimal;
-import java.sql.Timestamp;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
@@ -33,10 +32,6 @@ final class Row {
         Object o = values.get(column);
         if (o == null) {
             return "";
-        }
-        if (o instanceof Timestamp) {
-            String s = ((Timestamp) o).toLocalDateTime().toString().replace('T', ' ');
-            return s.endsWith(" 00:00") ? s.substring(0, 10) : s;
         }
         if (o instanceof BigDecimal) {
             BigDecimal b = (BigDecimal) o;
